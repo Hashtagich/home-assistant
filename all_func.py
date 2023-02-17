@@ -3,8 +3,27 @@ import json
 import wikipedia
 import re
 from datetime import datetime, timedelta
+import pyttsx3
+from time import sleep
+import speech_recognition as sr
 
 name_json, task_json = 'datas.json', 'tasks.json'
+
+engine = pyttsx3.init()
+
+engine.setProperty('rate', 150)
+engine.setProperty('volume', 0.9)
+
+ru_voice_id = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\TTS_MS_RU-RU_IRINA_11.0"
+voice = engine.setProperty('voice', ru_voice_id)
+
+r = sr.Recognizer()
+micro = sr.Microphone(device_index=1)
+
+
+# commands_dict = {
+#     '1': [get_in_wiki, ['1']]
+# }
 
 
 def open_json_file(name_file: str = name_json) -> dict:
@@ -25,12 +44,78 @@ dict_min = data['dict_min']
 dict_hours = data['dict_hours']
 dict_number_calendar = data['dict_number_calendar']
 mask = data['mask']
+yes_answer = data['yes_answer']
 
 
 def write_json_file(dt: dict, name_file: str = name_json):
     """Функция перезаписи данных в файле формата json."""
     with open(name_file, 'w', encoding='utf8') as file:
         file.write(json.dumps(dt, indent=4, sort_keys=False, ensure_ascii=False))
+
+
+def speak(what_say: str) -> None:
+    engine.say(what_say)
+    engine.runAndWait()
+    engine.stop()
+
+
+def listen():
+    with micro as source:
+        r.adjust_for_ambient_noise(source, duration=0.5)  # настройка посторонних шумов
+        audio = r.listen(source)
+    try:
+
+        result = r.recognize_google(audio, language='ru-RU').lower()
+        return result
+
+    except:
+        speak('Я Вас не понял, повторите!')
+        listen()
+
+
+def record_volume():
+    query = listen()
+    # запуск цикла и достаём по ключу функции созвучные со словами, что в списках (в мусоре есть пример связи)
+
+
+def have_tasks_today(dt: dict):
+    """Функция проверяет словарь задач на наличие задач на сегодня
+    и в зависимости от условия запускает определённую функцию."""
+    tasks = {key[-5:]: var for key, var in dt.items() if time_has_come(date_from_dict=key)}
+    if len(tasks.keys()) > 1:
+        begin = 'У Вас на сегодня запланировано несколько задач. '
+        result = begin + " ".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
+        speak(result)
+        del_or_not_del()
+    elif len(tasks) == 1:
+        begin = 'У Вас на сегодня запланирована одна задача. '
+        result = begin + " ".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
+        speak(result)
+        del_or_not_del()
+    else:
+        speak('На сегодня нет запланированных задач.')
+
+
+
+def delete_task(dt: dict) -> dict:
+    """Функция создаёт, возвращает новый словарь, но без сегодняшних задача, на основе переданного (основного) словаря
+    и перезаписывает данные по словарю в основном файле."""
+    tasks = {key: var for key, var in dt.items() if not time_has_come(date_from_dict=key)}
+    write_json_file(dt=tasks, name_file=task_json)
+    return tasks
+
+
+def del_or_not_del():
+    global dict_tasks
+    speak('Удалить задачу?')
+
+    query = listen()
+    if query in yes_answer:
+        delete_task(dt=dict_tasks)
+        dict_tasks = open_json_file(name_file=task_json)
+        speak('Всё работает!')
+    else:
+        speak('Косяк!!!')
 
 
 def rename_assistant(new_name_assistant: str, old_dt: dict):
@@ -77,7 +162,6 @@ def time_has_come(date_from_dict: str, days: int = 0, hours: int = 1, minutes: i
     delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
     return datetime_now + delta >= datetime.strptime(date_from_dict, mask) >= datetime_now - delta
-        # return True
 
 
 def what_time_is_it() -> str:

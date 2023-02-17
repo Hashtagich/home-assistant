@@ -1,14 +1,15 @@
-from datetime import datetime, timedelta
+dts = {
+    "16.02.2023 15:00": "Пойти погулять",
+    "17.02.2023 15:30": "Почитать книгу",
+    "17.02.2023 16:30": "Почитать книгу1111",
+    "18.02.2023 16:00": "Залить крота!"
+}
 
-mask = "%d.%m.%Y %H:%M"
 
-s1 = "16.02.2023 15:00"
-s2 = "17.02.2023 15:30"
-s3 = "18.02.2023 16:00"
+def ss(dt):
+    return {key: var for key, var in dt.items() if '17.02.2023' in key}
 
-datetime_now = datetime.today()
-delta = timedelta(days=0, hours=1, minutes=0, seconds=0)
-date_from_dict = s2
 
-ss = datetime_now + delta >= datetime.strptime(date_from_dict, mask) >= datetime_now - delta
-print(ss)
+
+dts = ss(dts)
+print(dts)
