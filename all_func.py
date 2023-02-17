@@ -1,13 +1,15 @@
 import json
-
-import wikipedia
 import re
 from datetime import datetime, timedelta
+
 import pyttsx3
-from time import sleep
 import speech_recognition as sr
+import wikipedia
+
+# from time import sleep
 
 name_json, task_json = 'datas.json', 'tasks.json'
+flag = True
 
 engine = pyttsx3.init()
 
@@ -21,11 +23,7 @@ r = sr.Recognizer()
 micro = sr.Microphone(device_index=1)
 
 
-# commands_dict = {
-#     '1': [get_in_wiki, ['1']]
-# }
-
-
+# Блок с переменными и функция для работы с json файлами.
 def open_json_file(name_file: str = name_json) -> dict:
     """Функция открывает файл формата json и возвращает словарь.
     Изначально основная задача функции открытие файла с основными переменными для программы."""
@@ -45,6 +43,7 @@ dict_hours = data['dict_hours']
 dict_number_calendar = data['dict_number_calendar']
 mask = data['mask']
 yes_answer = data['yes_answer']
+no_answer = data['no_answer']
 
 
 def write_json_file(dt: dict, name_file: str = name_json):
@@ -53,13 +52,16 @@ def write_json_file(dt: dict, name_file: str = name_json):
         file.write(json.dumps(dt, indent=4, sort_keys=False, ensure_ascii=False))
 
 
+# Блок для записи звука с микрофона и озвучивания результатов функции.
 def speak(what_say: str) -> None:
+    """Функция озвучивает переданный ей текст"""
     engine.say(what_say)
     engine.runAndWait()
     engine.stop()
 
 
-def listen():
+def listen() -> str:
+    """Функция записывает всё что услышит через микрофон."""
     with micro as source:
         r.adjust_for_ambient_noise(source, duration=0.5)  # настройка посторонних шумов
         audio = r.listen(source)
@@ -68,33 +70,81 @@ def listen():
         result = r.recognize_google(audio, language='ru-RU').lower()
         return result
 
-    except:
+    except:  # raise UnknownValueError() speech_recognition.UnknownValueError
         speak('Я Вас не понял, повторите!')
         listen()
 
 
-def record_volume():
-    query = listen()
-    # запуск цикла и достаём по ключу функции созвучные со словами, что в списках (в мусоре есть пример связи)
-
-
-def have_tasks_today(dt: dict):
+# Блок с функциями для работы с задачами.
+def have_tasks_today(dt: dict) -> None:
     """Функция проверяет словарь задач на наличие задач на сегодня
     и в зависимости от условия запускает определённую функцию."""
+    global flag
     tasks = {key[-5:]: var for key, var in dt.items() if time_has_come(date_from_dict=key)}
-    if len(tasks.keys()) > 1:
-        begin = 'У Вас на сегодня запланировано несколько задач. '
-        result = begin + " ".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
-        speak(result)
-        del_or_not_del()
-    elif len(tasks) == 1:
-        begin = 'У Вас на сегодня запланирована одна задача. '
-        result = begin + " ".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
-        speak(result)
-        del_or_not_del()
-    else:
-        speak('На сегодня нет запланированных задач.')
+    update_flag()
+    if flag:
+        if len(tasks.keys()) == 0:
+            flag = False
+            speak('На сегодня нет запланированных задач.')
 
+        elif len(tasks) == 1:
+            begin = 'У Вас на сегодня запланирована одна задача. '
+            result = begin + " ".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
+            speak(result)
+            flag = False
+            update_flag()
+            del_or_not_del()
+        else:
+            begin = 'У Вас на сегодня запланировано несколько задач. '
+            result = begin + " ".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
+            speak(result)
+            flag = False
+            update_flag()
+            del_or_not_del()
+
+    else:
+        speak('Круг пройден')
+
+
+def update_flag() -> None:
+    """Функция возвращает bool значение если сейчас 00 минут. Необходимо, чтобы обновлять flag."""
+    global flag
+    if datetime.today().minute == 0:
+        flag = True
+
+
+def create_task() -> None:
+    """Функция добавляет новую задачу и обновляет список файле."""
+    speak('Укажите дату и время.')
+    date_task = listen()
+    speak('Какая задача?')
+    task = listen()
+    speak(f'Вы запланировали на {date_task} {task}. Всё верно?')
+    query = listen()
+    if query in yes_answer:
+        dict_tasks[date_task] = dict_tasks.get(date_task, "") + task
+        write_json_file(dt=dict_tasks, name_file=task_json)
+        speak('Задача успешно добавлена')
+    else:
+        speak('Попробуем снова.')
+        create_task()
+
+
+def del_or_not_del():
+    """Функция уточняет удалять задачу или нет."""
+    global dict_tasks
+    speak('Удалить?')
+
+    query = listen()
+    if query in yes_answer:
+        delete_task(dt=dict_tasks)
+        dict_tasks = open_json_file(name_file=task_json)
+        speak('Удалено.')
+    if query in no_answer:
+        main()
+    else:
+        speak('Я Вас не понял. Давайте повторим.')
+        del_or_not_del()
 
 
 def delete_task(dt: dict) -> dict:
@@ -105,17 +155,18 @@ def delete_task(dt: dict) -> dict:
     return tasks
 
 
-def del_or_not_del():
-    global dict_tasks
-    speak('Удалить задачу?')
+# Блок с функциями для работы с ассистентом.
+def call_assistant(query) -> None:
+    """Функция проверяет обратились к ассистенту или нет."""
+    if name_assistant in query:
+        query = query.replace(name_assistant, '')
+        return query  # заглушка
 
-    query = listen()
-    if query in yes_answer:
-        delete_task(dt=dict_tasks)
-        dict_tasks = open_json_file(name_file=task_json)
-        speak('Всё работает!')
-    else:
-        speak('Косяк!!!')
+
+def stop_assistant(query) -> None:
+    """Функция проверяет сказал ли человек Стоп или нет"""
+    if query in no_answer:
+        main()
 
 
 def rename_assistant(new_name_assistant: str, old_dt: dict):
@@ -125,11 +176,17 @@ def rename_assistant(new_name_assistant: str, old_dt: dict):
     write_json_file(dt=old_dt, name_file=name_json)
 
 
-def get_in_wiki(string: str, tuple_del_phrase: tuple) -> str:
+# Блок с функциями для основных запросов к ассистенту.
+def question_in_or_no(tuple_words: tuple, word: str) -> bool:
+    """Функция для определения содержит ли запрос слова из заданного кортежа"""
+    return any([True for i in tuple_words if i.lower() in word.lower()])
+
+
+def get_in_wiki(string: str, tuple_del_phrase_wiki: tuple) -> str:
     """Функция для парсинга Википедии на русском языке. Удалят слова совпадающие с кортежем list_del_phrase
     и возвращает первый абзац странички запроса."""
     wikipedia.set_lang("ru")
-    mask_phrase = " |".join(tuple_del_phrase)
+    mask_phrase = " |".join(tuple_del_phrase_wiki)
 
     phrase = re.sub(mask_phrase, r'', string)
 
@@ -138,11 +195,7 @@ def get_in_wiki(string: str, tuple_del_phrase: tuple) -> str:
     return result
 
 
-def question_in_or_no(tuple_words: tuple, word: str) -> bool:
-    """Функция для определения содержит ли запрос слова из заданного кортежа"""
-    return any([True for i in tuple_words if i.lower() in word.lower()])
-
-
+# Блок работы со временем и датами.
 def what_name_time(dict_time: dict, number: int) -> str:
     """Функция для прогонки заданного словаря и возвращения ключа,
     который обозначает название времени, если номер времени находится в заданном списке."""
@@ -172,10 +225,13 @@ def what_time_is_it() -> str:
     minute_str = what_name_time(dict_time=dict_min, number=datetime_now.minute)
     second_str = what_name_time(dict_time=dict_sec, number=datetime_now.second)
 
-    return f'Точное время {datetime_now.hour} {hour_str} {datetime_now.minute} {minute_str} {datetime_now.second} {second_str}'
+    return f'Точное время ' \
+           f'{datetime_now.hour} {hour_str} ' \
+           f'{datetime_now.minute} {minute_str} ' \
+           f'{datetime_now.second} {second_str}'
 
 
-def what_today() -> str:
+def what_date_today() -> str:
     """Функция возвращает предложение с обозначением сегодняшней даты."""
     from calendar import month_name
     import locale
@@ -186,6 +242,20 @@ def what_today() -> str:
 
     return f'Сегодня {dict_number_calendar[str(datetime_now.day)]} {mount.lower()} {datetime_now.year} года'
 
+
+# Блок main
+def record_volume():
+    query = listen()
+
+
+# запуск цикла и достаём по ключу функции созвучные со словами, что в списках (в мусоре есть пример связи)
+
+def main():
+    """Функция для запуска ассистента."""
+    while True:
+        have_tasks_today(dt=dict_tasks)
+
+        record_volume()
 # мусор
 # commands_dict = {
 #     'commands': {
