@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 import pyttsx3
 import speech_recognition as sr
@@ -33,22 +33,28 @@ def open_json_file(name_file: str = name_json) -> dict:
 
 data = open_json_file()
 dict_tasks = open_json_file(name_file=task_json)
-name_assistant = data['Name_assistant']
+name_assistant = data['name_assistant']
+
 tuple_del_phrase = tuple(data['list_del_phrase'])
 tuple_rename = tuple(data['rename'])
-tuple_music = tuple(data['play_music'])
 tuple_what_tasks_today = tuple(data['what_tasks_today'])
-dict_sec = data['dict_sec']
-dict_min = data['dict_min']
-dict_hours = data['dict_hours']
-dict_number_calendar = data['dict_number_calendar']
-mask_datetime = data['mask_datetime']
+tuple_what_date_today = tuple(data['what_date_today'])
+tuple_what_time = tuple(data['what_time'])
+tuple_greeting = tuple(data['greeting'])
+tuple_create_task = tuple(data['create_task'])
+
+tuple_music = tuple(data['play_music'])
+
+list_mounts = data["list_mounts"]
+
 mask_date = data['mask_date']
+mask_datetime = data['mask_datetime']
 yes_answer = data['yes_answer']
 no_answer = data['no_answer']
+stop_answer = data['stop_answer']
 
 
-def write_json_file(dt: dict, name_file: str = name_json):
+def write_json_file(dt: dict, name_file: str = name_json) -> None:
     """Функция перезаписи данных в файле формата json."""
     with open(name_file, 'w', encoding='utf8') as file:
         file.write(json.dumps(dt, indent=4, sort_keys=False, ensure_ascii=False))
@@ -56,7 +62,7 @@ def write_json_file(dt: dict, name_file: str = name_json):
 
 # Блок для записи звука с микрофона и озвучивания результатов функции.
 def speak(what_say: str) -> None:
-    """Функция озвучивает переданный ей текст"""
+    """Функция озвучивает переданный ей текст."""
     engine.say(what_say)
     engine.runAndWait()
     engine.stop()
@@ -66,11 +72,12 @@ def listen() -> str:
     """Функция записывает всё что услышит через микрофон."""
     try:
         with micro as source:
-            r.adjust_for_ambient_noise(source, duration=0.5)  # настройка посторонних шумов
-            audio = r.listen(source)
+            r.adjust_for_ambient_noise(source=source, duration=0.5)  # настройка посторонних шумов
+            audio = r.listen(source=source)
 
         result = r.recognize_google(audio, language='ru-RU').lower()
-        return result
+
+        return call_assistant(query=result)
 
     except sr.UnknownValueError:
         speak('Я Вас не понял, повторите!')
@@ -78,7 +85,7 @@ def listen() -> str:
 
 
 # Блок с функциями для работы с задачами.
-def what_tasks_today(dt: dict = dict_tasks, *args) -> None:
+def what_tasks_today(dt: dict = dict_tasks) -> None:
     """Функция проверяет словарь задач на наличие задач на сегодняшнюю дату
     и в зависимости от условия озвучивает задачу(и) или говорит что их нет."""
     date_today = datetime.today().strftime(mask_date)
@@ -128,14 +135,37 @@ def update_flag() -> None:
 
 def create_task() -> None:
     """Функция добавляет новую задачу и обновляет список файле."""
-    speak('Укажите дату и время.')
-    date_task = listen()
+    speak('Какое число?')
+    date_day = listen()
+
+    speak('Какой месяц?')
+    date_mount = listen()
+
+    # Прогоняем по циклу на случай если назвали не цифру, а месяц.
+    for num, list_mount in enumerate(list_mounts, start=1):
+        if date_mount in list_mount or date_mount == str(num):
+            date_mount = int(num)
+            break
+        else:
+            continue
+
+    speak('Какое год?')
+    date_year = listen()
+
+    speak('Укажите время.')
+    time_task = listen()
+
     speak('Какая задача?')
     task = listen()
-    speak(f'Вы запланировали на {date_task} {task}. Всё верно?')
+
+    date_task = date(int(date_year), date_mount, int(date_day)).strftime(mask_date)
+    datetime_task = f'{date_task} {time_task}'
+
+    speak(f'Вы запланировали на {date_task} в {time_task} {task}. Всё верно?')
     query = listen()
+
     if query in yes_answer:
-        dict_tasks[date_task] = dict_tasks.get(date_task, "") + task
+        dict_tasks[datetime_task] = dict_tasks.get(date_task, "") + task
         write_json_file(dt=dict_tasks, name_file=task_json)
         speak('Задача успешно добавлена')
     else:
@@ -143,15 +173,15 @@ def create_task() -> None:
         create_task()
 
 
-def del_or_not_del():
+def del_or_not_del() -> None:
     """Функция уточняет удалять задачу или нет."""
     global dict_tasks
-    speak('Удалить?')
 
+    speak('Удалить?')
     query = listen()
+
     if query in yes_answer:
-        delete_task(dt=dict_tasks)
-        dict_tasks = open_json_file(name_file=task_json)
+        dict_tasks = delete_task(dt=dict_tasks)
         speak('Удалено.')
     elif query in no_answer:
         main()
@@ -161,6 +191,8 @@ def del_or_not_del():
 
 
 def delete_task(dt: dict) -> dict:
+    # В будущем эта функция скорее всего станет функцией для удаления всех задач на сегодня
+    # или превратится в функцию удаления всех задач на конкретную дату.
     """Функция создаёт, возвращает новый словарь, но без сегодняшних задача, на основе переданного (основного) словаря
     и перезаписывает данные по словарю в основном файле."""
     tasks = {key: var for key, var in dt.items() if not time_has_come(date_from_dict=key)}
@@ -169,24 +201,31 @@ def delete_task(dt: dict) -> dict:
 
 
 # Блок с функциями для работы с ассистентом.
-def call_assistant(query) -> None:
-    """Функция проверяет обратились к ассистенту или нет."""
-    if name_assistant in query:
-        query = query.replace(name_assistant, '')
-        return query  # заглушка
+def call_assistant(query: str) -> str:
+    """Функция проверяет обратились к ассистенту или нет. Функция убирает из запроса имя ассистента."""
+    if query == name_assistant:
+        speak('Слушаю Вас.')
+        record_volume()
+    elif name_assistant in query:
+        request = query.replace(name_assistant, '')
+        result = stop_assistant(query=request)
+        return result
+    else:
+        result = stop_assistant(query=query)
+        return result
 
 
-def stop_assistant(query) -> None:
-    """Функция проверяет сказал ли человек Стоп или нет"""
-    if query in no_answer:
+def stop_assistant(query: str) -> str:
+    """Функция проверяет сказал ли пользователь Стоп или нет."""
+    if query in stop_answer:
         main()
+    else:
+        return query
 
 
-def rename_assistant(*args):
+def rename_assistant(old_dt: dict = data) -> None:
     """Функция переименовывает имя голосового помощника и
     запускает функцию перезаписи файла json, где его имя находится."""
-
-    old_dt = args[0]
 
     speak('Назовите моё новое имя')
     new_name = listen()
@@ -203,7 +242,7 @@ def rename_assistant(*args):
             speak(f'Теперь меня зовут {name_assistant}')
         elif question_in_or_no(tuple_words=no_answer, word=query_fun):
             speak('Значит я не правильно услышал. Давайте повторим.')
-            rename_assistant(data, query)
+            rename_assistant()  # data, query
         else:
             speak('Я Вас не понял. Скажите да или нет.')
             second_query = listen()
@@ -211,8 +250,6 @@ def rename_assistant(*args):
 
     yes_or_no(query_fun=query)
 
-
-# data['Name_assistant']
 
 # Блок с функциями для основных запросов к ассистенту.
 def question_in_or_no(tuple_words: tuple, word: str) -> bool:
@@ -235,17 +272,21 @@ def get_in_wiki(*args, tuple_del_phrase_wiki: tuple = tuple_del_phrase) -> None:
     speak(f'Вот что удалось найти на Википедии. {result}')
 
 
+def greeting(data_greeting: tuple = tuple_greeting) -> None:
+    """Функция приветствует пользователя если с ним поздоровались."""
+    time_hour_now = datetime.now().time().hour
+
+    if 12 > time_hour_now >= 6:
+        speak(data_greeting[1])
+    elif 17 > time_hour_now >= 12:
+        speak(data_greeting[2])
+    elif 24 > time_hour_now >= 17:
+        speak(data_greeting[3])
+    else:
+        speak(data_greeting[0])
+
+
 # Блок работы со временем и датами.
-def what_name_time(dict_time: dict, number: int) -> str:
-    """Функция для прогонки заданного словаря и возвращения ключа,
-    который обозначает название времени, если номер времени находится в заданном списке."""
-    for key, val in dict_time.items():
-        if number in val:
-            return key
-        else:
-            continue
-
-
 def time_has_come(date_from_dict: str, days: int = 0, hours: int = 1, minutes: int = 0, seconds: int = 0) -> bool:
     """Функция для отслеживания времени.
     Функция принимает дату и время в формате строки и необязательные аргументы времени для настройки интервала отбора.
@@ -257,30 +298,21 @@ def time_has_come(date_from_dict: str, days: int = 0, hours: int = 1, minutes: i
     return datetime_now + delta >= datetime.strptime(date_from_dict, mask_datetime) >= datetime_now - delta
 
 
-def what_time_is_it() -> str:
+def what_time_is_it() -> None:
     """Функция возвращает предложение с обозначением текущего времени."""
     datetime_now = datetime.today()
 
-    hour_str = what_name_time(dict_time=dict_hours, number=datetime_now.hour)
-    minute_str = what_name_time(dict_time=dict_min, number=datetime_now.minute)
-    second_str = what_name_time(dict_time=dict_sec, number=datetime_now.second)
-
-    return f'Точное время ' \
-           f'{datetime_now.hour} {hour_str} ' \
-           f'{datetime_now.minute} {minute_str} ' \
-           f'{datetime_now.second} {second_str}'
+    result = f'Точное время {datetime_now.hour}:{datetime_now.minute}:{datetime_now.second}'
+    speak(result)
 
 
-def what_date_today() -> str:
+def what_date_today() -> None:
     """Функция возвращает предложение с обозначением сегодняшней даты."""
-    from calendar import month_name
     import locale
     datetime_now = datetime.today()
     locale.setlocale(locale.LC_ALL, 'ru_RU.UTF-8')
-    mount = f'{month_name[datetime_now.month][:-1]}а' \
-        if datetime_now.month in [3, 8] else f'{month_name[datetime_now.month][:-1]}я'
 
-    return f'Сегодня {dict_number_calendar[str(datetime_now.day)]} {mount.lower()} {datetime_now.year} года'
+    speak(f'Сегодня {datetime_now.day}.{datetime_now.month}.{datetime_now.year}')
 
 
 # Блок main
@@ -288,24 +320,28 @@ dict_fun = {
     tuple_del_phrase: get_in_wiki,
     tuple_rename: rename_assistant,
     tuple_what_tasks_today: what_tasks_today,
+    tuple_greeting: greeting,
+    tuple_what_time: what_time_is_it,
+    tuple_what_date_today: what_date_today,
+    tuple_create_task: create_task
 }
 
 
-def record_volume(flag_fun=True):
+def record_volume(flag_fun=True) -> None:
+    """Функция запускает функцию listen и прогоняет её результат через словарь dict_fun
+    и при совпадении выполняется функция, которая заложена в боте."""
     query = listen()
     for words_tuple, fun in dict_fun.items():
         if question_in_or_no(tuple_words=words_tuple, word=query):
             flag_fun = False
-            fun(data, query)
+            fun()  # data, query
         else:
             continue
     if flag_fun:
         speak('Тут будет функция заглушки для тех команд или запросов которые ассистент не умеет.')
 
 
-# запуск цикла и достаём по ключу функции созвучные со словами, что в списках (в мусоре есть пример связи)
-
-def main():
+def main() -> None:
     """Функция для запуска ассистента."""
     while True:
         have_tasks_today(dt=dict_tasks)
