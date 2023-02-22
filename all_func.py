@@ -5,11 +5,15 @@ from datetime import datetime, timedelta, date
 import pyttsx3
 import speech_recognition as sr
 import wikipedia
+from notifiers import get_notifier
+import requests
+from geopy import geocoders
 
 # from time import sleep
 
 name_json, task_json = 'datas.json', 'tasks.json'
 flag = True
+telegram = get_notifier('telegram')
 
 engine = pyttsx3.init()
 
@@ -43,15 +47,22 @@ tuple_what_time = tuple(data['what_time'])
 tuple_greeting = tuple(data['greeting'])
 tuple_create_task = tuple(data['create_task'])
 
+tuple_weather = tuple(data['what_is_the_weather'])
 tuple_music = tuple(data['play_music'])
 
 list_mounts = data["list_mounts"]
-
-mask_date = data['mask_date']
-mask_datetime = data['mask_datetime']
 yes_answer = data['yes_answer']
 no_answer = data['no_answer']
 stop_answer = data['stop_answer']
+
+dict_conditions_ru = data["data_weather"]["conditions_ru"]
+dict_part_name_ru = data["data_weather"]["part_name_ru"]
+
+mask_date = data['mask_date']
+mask_datetime = data['mask_datetime']
+weather_api_key = data['weather_api_key']
+web_search_api_key = data['web_search_api_key']
+city = data['city']
 
 
 def write_json_file(dt: dict, name_file: str = name_json) -> None:
@@ -93,9 +104,13 @@ def what_tasks_today(dt: dict = dict_tasks) -> None:
     if len(tasks) == 0:
         speak('На сегодня нет запланированных задач.')
     elif len(tasks) == 1:
-        speak(f'У Вас на сегодня запланирована одна задача. {" ".join(tasks)}')
+        result = 'У Вас на сегодня запланирована одна задача.\n' + "\n".join(tasks)
+        speak(result)
+        telegram.notify(token=data["token_bot"], chat_id=data["user_id"], message=result)
     else:
-        speak(f'У Вас на сегодня запланировано несколько задач. {" ".join(tasks)}')
+        result = 'У Вас на сегодня запланировано несколько задач.\n' + "\n".join(tasks)
+        speak(result)
+        telegram.notify(token=data["token_bot"], chat_id=data["user_id"], message=result)
 
 
 def have_tasks_today(dt: dict) -> None:
@@ -109,15 +124,17 @@ def have_tasks_today(dt: dict) -> None:
             flag = False
             speak('В течении ближайшего часа нет задач.')
         elif len(tasks) == 1:
-            begin = 'У Вас на сегодня запланирована одна задача. '
-            result = begin + " ".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
+            begin = 'У Вас на сегодня запланирована одна задача.\n'
+            result = begin + "\n".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
+            telegram.notify(token=data["token_bot"], chat_id=data["user_id"], message=result)
             speak(result)
             flag = False
             update_flag()
             del_or_not_del()
         else:
-            begin = 'У Вас на сегодня запланировано несколько задач. '
-            result = begin + " ".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
+            begin = 'У Вас на сегодня запланировано несколько задач.\n'
+            result = begin + "\n".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
+            telegram.notify(token=data["token_bot"], chat_id=data["user_id"], message=result)
             speak(result)
             flag = False
             update_flag()
@@ -162,15 +179,23 @@ def create_task() -> None:
     datetime_task = f'{date_task} {time_task}'
 
     speak(f'Вы запланировали на {date_task} в {time_task} {task}. Всё верно?')
-    query = listen()
 
-    if query in yes_answer:
-        dict_tasks[datetime_task] = dict_tasks.get(date_task, "") + task
-        write_json_file(dt=dict_tasks, name_file=task_json)
-        speak('Задача успешно добавлена')
-    else:
-        speak('Попробуем снова.')
-        create_task()
+    flag_res = True
+    while flag_res:
+        query = listen()
+        if question_in_or_no(tuple_words=yes_answer, word=query):
+            dict_tasks[datetime_task] = dict_tasks.get(date_task, "") + task
+            write_json_file(dt=dict_tasks, name_file=task_json)
+            flag_res = False
+            speak('Задача успешно добавлена')
+
+        elif question_in_or_no(tuple_words=no_answer, word=query):
+            speak('Значит я не правильно услышал. Давайте повторим.')
+            create_task()
+            flag_res = False
+
+        else:
+            speak('Я Вас не понял. Скажите да или нет.')
 
 
 def del_or_not_del() -> None:
@@ -257,7 +282,7 @@ def question_in_or_no(tuple_words: tuple, word: str) -> bool:
     return any([True for i in tuple_words if i.lower() in word.lower()])
 
 
-def get_in_wiki(*args, tuple_del_phrase_wiki: tuple = tuple_del_phrase) -> None:
+def get_in_wiki(*args, tuple_del_phrase_wiki: tuple = tuple_del_phrase) -> None:  # Доделать !!!
     """Функция для парсинга Википедии на русском языке. Удалят слова совпадающие с кортежем list_del_phrase
     и возвращает первый абзац странички запроса."""
     wikipedia.set_lang("ru")
@@ -284,6 +309,11 @@ def greeting(data_greeting: tuple = tuple_greeting) -> None:
         speak(data_greeting[3])
     else:
         speak(data_greeting[0])
+
+
+def play_music() -> None:
+    """Функция для включения музыки."""
+    speak('Заглушка для музыки')
 
 
 # Блок работы со временем и датами.
@@ -315,6 +345,79 @@ def what_date_today() -> None:
     speak(f'Сегодня {datetime_now.day}.{datetime_now.month}.{datetime_now.year}')
 
 
+# Блок для работы с погодой
+def get_geolocation(city_fun: str = city) -> tuple[float, float]:
+    """Функция определяет ширину и долготу указанного города."""
+    geolocator = geocoders.Nominatim(user_agent="app_assis")
+    latitude = geolocator.geocode(city_fun).latitude
+    longitude = geolocator.geocode(city_fun).longitude
+    return latitude, longitude
+
+
+def what_is_the_weather() -> None:
+    """Функция для запроса погоды на яндекс-погоде через API(не более 50 запросов в день) и озвучивания.
+    Озвучивает температуру сейчас и как ощущается.
+    Если пользователь согласится, то в телеграмм отправится более подробный прогноз погоды."""
+    coordinates = get_geolocation()
+    url_weather = 'https://api.weather.yandex.ru/v2/informers'
+
+    headers = {'X-Yandex-API-Key': weather_api_key}
+    weather_params = {
+        'lat': coordinates[0],
+        'lon': coordinates[1],
+        'lang': 'ru_RU'
+    }
+
+    response = requests.get(url_weather, headers=headers, params=weather_params)
+    data_weather = response.json()
+
+    fact_weather_dict = data_weather['fact']
+
+    result_speak = f"""Сейчас {dict_conditions_ru[fact_weather_dict['condition']]}. 
+    Температура: {fact_weather_dict['temp']} ℃. 
+    По ощущениям как {fact_weather_dict['feels_like']} ℃."""
+
+    speak(result_speak)
+
+    speak("Направить более подробный прогноз в телеграмм?")
+
+    flag_res = True
+    while flag_res:
+        query = listen()
+        if question_in_or_no(tuple_words=yes_answer, word=query):
+            flag_res = False
+
+            result = f"""Прогноз на {dict_part_name_ru['fact']}
+    {dict_conditions_ru[fact_weather_dict['condition']].capitalize()}
+        Температура: {fact_weather_dict['temp']} ℃
+        По ощущениям как {fact_weather_dict['feels_like']} ℃
+        Скорость ветра {fact_weather_dict['wind_speed']} м/с
+
+"""
+
+            for part in data_weather['forecast']['parts']:
+                result += f"""Прогноз на {dict_part_name_ru[part['part_name']]}
+    {dict_conditions_ru[part['condition']].capitalize()}
+        Максимальная температура: {part['temp_max']} ℃
+        Минимальная температура: {part['temp_min']} ℃
+        По ощущениям как {part['feels_like']} ℃
+        Скорость ветра {part['wind_speed']} м/с
+
+"""
+
+            link_weather = str(data_weather['info']['url'])
+
+            result += f"Более подробнее тут:\n{link_weather}"
+            telegram.notify(token=data["token_bot"], chat_id=data["user_id"], message=result)
+
+        elif question_in_or_no(tuple_words=no_answer, word=query):
+            flag_res = False
+            record_volume()
+
+        else:
+            speak('Я Вас не понял. Скажите да или нет.')
+
+
 # Блок main
 dict_fun = {
     tuple_del_phrase: get_in_wiki,
@@ -323,7 +426,10 @@ dict_fun = {
     tuple_greeting: greeting,
     tuple_what_time: what_time_is_it,
     tuple_what_date_today: what_date_today,
-    tuple_create_task: create_task
+    tuple_create_task: create_task,
+    tuple_weather: what_is_the_weather,
+    tuple_music: play_music
+
 }
 
 
