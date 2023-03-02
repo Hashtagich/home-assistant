@@ -3,11 +3,12 @@ import re
 from datetime import datetime, timedelta, date
 
 import pyttsx3
+import requests
 import speech_recognition as sr
 import wikipedia
-from notifiers import get_notifier
-import requests
+from bs4 import BeautifulSoup
 from geopy import geocoders
+from notifiers import get_notifier
 
 # from time import sleep
 
@@ -46,14 +47,19 @@ tuple_what_date_today = tuple(data['what_date_today'])
 tuple_what_time = tuple(data['what_time'])
 tuple_greeting = tuple(data['greeting'])
 tuple_create_task = tuple(data['create_task'])
+tuple_events = tuple(data['get_events'])
+tuple_what_can_you_do = tuple(data['what_can_you_do'])
+tuple_what_can_i_do = tuple(data['what_can_i_do'])
 
 tuple_weather = tuple(data['what_is_the_weather'])
 tuple_music = tuple(data['play_music'])
 
+list_days = data["list_days"]
 list_mounts = data["list_mounts"]
 yes_answer = data['yes_answer']
 no_answer = data['no_answer']
 stop_answer = data['stop_answer']
+url_home_page = data['https://afisha.yandex.ru']
 
 dict_conditions_ru = data["data_weather"]["conditions_ru"]
 dict_part_name_ru = data["data_weather"]["part_name_ru"]
@@ -61,8 +67,7 @@ dict_part_name_ru = data["data_weather"]["part_name_ru"]
 mask_date = data['mask_date']
 mask_datetime = data['mask_datetime']
 weather_api_key = data['weather_api_key']
-web_search_api_key = data['web_search_api_key']
-city = data['city']
+city, city_en = data['city']
 
 
 def write_json_file(dt: dict, name_file: str = name_json) -> None:
@@ -96,7 +101,7 @@ def listen() -> str:
 
 
 # Блок с функциями для работы с задачами.
-def what_tasks_today(dt: dict = dict_tasks) -> None:
+def what_tasks_today(*args, dt: dict = dict_tasks) -> None:
     """Функция проверяет словарь задач на наличие задач на сегодняшнюю дату
     и в зависимости от условия озвучивает задачу(и) или говорит что их нет."""
     date_today = datetime.today().strftime(mask_date)
@@ -121,14 +126,12 @@ def have_tasks_today(dt: dict) -> None:
     update_flag()
     if flag:
         if len(tasks.keys()) == 0:
-            flag = False
             speak('В течении ближайшего часа нет задач.')
         elif len(tasks) == 1:
             begin = 'У Вас на сегодня запланирована одна задача.\n'
             result = begin + "\n".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
             telegram.notify(token=data["token_bot"], chat_id=data["user_id"], message=result)
             speak(result)
-            flag = False
             update_flag()
             del_or_not_del()
         else:
@@ -136,9 +139,9 @@ def have_tasks_today(dt: dict) -> None:
             result = begin + "\n".join([f'В {key[-5:]} {var}' for key, var in tasks.items()])
             telegram.notify(token=data["token_bot"], chat_id=data["user_id"], message=result)
             speak(result)
-            flag = False
             update_flag()
             del_or_not_del()
+
     else:
         speak('Круг пройден')  # В будущем удалить т.к. цикл начнётся заново, проверено.
 
@@ -146,19 +149,27 @@ def have_tasks_today(dt: dict) -> None:
 def update_flag() -> None:
     """Функция возвращает bool значение если сейчас 00 минут. Необходимо, чтобы обновлять flag."""
     global flag
-    if datetime.today().minute == 0:
+    if datetime.today().minute == 58:
         flag = True
+    else:
+        flag = False
 
 
-def create_task() -> None:
-    """Функция добавляет новую задачу и обновляет список файле."""
+def date_filter() -> tuple[int, int, int]:
+    """Функция запрашивает данные для даты и преобразовывает в нужный формат."""
     speak('Какое число?')
     date_day = listen()
+
+    for num, list_mount in enumerate(list_days, start=1):
+        if date_day in list_mount or date_day == str(num):
+            date_day = int(num)
+            break
+        else:
+            continue
 
     speak('Какой месяц?')
     date_mount = listen()
 
-    # Прогоняем по циклу на случай если назвали не цифру, а месяц.
     for num, list_mount in enumerate(list_mounts, start=1):
         if date_mount in list_mount or date_mount == str(num):
             date_mount = int(num)
@@ -169,13 +180,28 @@ def create_task() -> None:
     speak('Какое год?')
     date_year = listen()
 
+    for num, list_mount in enumerate(list_days, start=1):
+        if date_year in list_mount or date_year == str(num):
+            date_year = int(f'20{num}')
+            break
+        else:
+            continue
+
+    return date_year, date_mount, date_day
+
+
+def create_task(*args) -> None:
+    """Функция добавляет новую задачу и обновляет список файле."""
+
+    date_fun = date_filter()
+
     speak('Укажите время.')
     time_task = listen()
 
     speak('Какая задача?')
     task = listen()
 
-    date_task = date(int(date_year), date_mount, int(date_day)).strftime(mask_date)
+    date_task = date(int(date_fun[0]), date_fun[1], date_fun[2]).strftime(mask_date)
     datetime_task = f'{date_task} {time_task}'
 
     speak(f'Вы запланировали на {date_task} в {time_task} {task}. Всё верно?')
@@ -191,8 +217,8 @@ def create_task() -> None:
 
         elif question_in_or_no(tuple_words=no_answer, word=query):
             speak('Значит я не правильно услышал. Давайте повторим.')
-            create_task()
             flag_res = False
+            create_task()
 
         else:
             speak('Я Вас не понял. Скажите да или нет.')
@@ -205,10 +231,10 @@ def del_or_not_del() -> None:
     speak('Удалить?')
     query = listen()
 
-    if query in yes_answer:
+    if question_in_or_no(tuple_words=yes_answer, word=query):
         dict_tasks = delete_task(dt=dict_tasks)
         speak('Удалено.')
-    elif query in no_answer:
+    elif question_in_or_no(tuple_words=no_answer, word=query):
         main()
     else:
         speak('Я Вас не понял. Давайте повторим.')
@@ -242,44 +268,55 @@ def call_assistant(query: str) -> str:
 
 def stop_assistant(query: str) -> str:
     """Функция проверяет сказал ли пользователь Стоп или нет."""
-    if query in stop_answer:
+    if question_in_or_no(tuple_words=stop_answer, word=query):
         main()
     else:
         return query
 
 
-def rename_assistant(old_dt: dict = data) -> None:
+def rename_assistant(*args, old_dt: dict = data) -> None:
     """Функция переименовывает имя голосового помощника и
     запускает функцию перезаписи файла json, где его имя находится."""
+    global name_assistant
 
     speak('Назовите моё новое имя')
     new_name = listen()
     speak(f'Вы сказали {new_name}. Всё верно?')
-    query = listen()
 
-    def yes_or_no(query_fun: str):
-        global name_assistant
-        # Превратить в будущем в декоратор и переделать подходящие функции под него.
-        if question_in_or_no(tuple_words=yes_answer, word=query_fun):
+    flag_name = True
+    while flag_name:
+        query = listen()
+
+        if question_in_or_no(tuple_words=yes_answer, word=query):
             old_dt['Name_assistant'] = new_name
             write_json_file(dt=old_dt, name_file=name_json)
             name_assistant = new_name
+            flag_name = False
             speak(f'Теперь меня зовут {name_assistant}')
-        elif question_in_or_no(tuple_words=no_answer, word=query_fun):
+
+        elif question_in_or_no(tuple_words=no_answer, word=query):
             speak('Значит я не правильно услышал. Давайте повторим.')
-            rename_assistant()  # data, query
+            flag_name = False
+            rename_assistant()
+
         else:
             speak('Я Вас не понял. Скажите да или нет.')
-            second_query = listen()
-            yes_or_no(query_fun=second_query)
 
-    yes_or_no(query_fun=query)
+
+def what_can_you_do(*args) -> None:
+    """Озвучиваются все возможности ассистента."""
+    speak("Вот что я могу:\n")
+    speak(" ".join(tuple_what_can_i_do))
 
 
 # Блок с функциями для основных запросов к ассистенту.
 def question_in_or_no(tuple_words: tuple, word: str) -> bool:
     """Функция для определения содержит ли запрос слова из заданного кортежа"""
-    return any([True for i in tuple_words if i.lower() in word.lower()])
+    if isinstance(word, type(None)):
+        # speak('Я вас не расслышал, повторите.')
+        record_volume()
+    else:
+        return any([True for i in tuple_words if i.lower() in word.lower()])
 
 
 def get_in_wiki(*args, tuple_del_phrase_wiki: tuple = tuple_del_phrase) -> None:  # Доделать !!!
@@ -287,17 +324,20 @@ def get_in_wiki(*args, tuple_del_phrase_wiki: tuple = tuple_del_phrase) -> None:
     и возвращает первый абзац странички запроса."""
     wikipedia.set_lang("ru")
     mask_phrase = " |".join(tuple_del_phrase_wiki)
-    string = args[1]
+
+    string = args[0]
 
     phrase = re.sub(mask_phrase, r'', string)
+    try:
+        article = wikipedia.page(phrase).content
+        result = article[:article.find('\n')]
 
-    article = wikipedia.page(phrase).content
-    result = article[:article.find('\n')]
+        speak(f'Вот что удалось найти на Википедии. {result}')
+    except wikipedia.exceptions.PageError:
+        speak(f'Я не смог найти информацию по запросу {string}')
 
-    speak(f'Вот что удалось найти на Википедии. {result}')
 
-
-def greeting(data_greeting: tuple = tuple_greeting) -> None:
+def greeting(*args, data_greeting: tuple = tuple_greeting) -> None:
     """Функция приветствует пользователя если с ним поздоровались."""
     time_hour_now = datetime.now().time().hour
 
@@ -311,9 +351,63 @@ def greeting(data_greeting: tuple = tuple_greeting) -> None:
         speak(data_greeting[0])
 
 
-def play_music() -> None:
+def play_music(*args) -> None:
     """Функция для включения музыки."""
     speak('Заглушка для музыки')
+
+
+def get_events(*args, city_requests=city_en) -> None:
+    """Функция предоставляет информацию о мероприятиях в городе через сайт яндекс-афиша."""
+    # получаем дату
+    date_fun = date_filter()
+    # получаем дату
+    # получаем город
+    # получаем интервал
+    list_result = []
+    url_page = f'https://afisha.yandex.ru/{city_requests}?source=menu-city'
+    params = {'date': "-".join(map(str(date_fun))), 'period': 1}
+
+    resp = requests.get(url_page, params=params)
+    soup = BeautifulSoup(resp.text, 'lxml')
+    # print(soup)
+    # print()
+
+    list_event = tuple(soup.find_all('div', class_='Root-fq4hbj-4 iFrhLC'))
+    list_links = tuple(soup.find_all('a', class_='EventLink-sc-1x07jll-2 klGCIV'))
+
+    for atr, part_link in zip(list_event, list_links):
+        name_event = atr.find('h2', class_='Title-fq4hbj-3 hponhw').text
+        date_event = atr.find('li', class_='DetailsItem-fq4hbj-1 ZwxkD').text
+        link = f"{url_home_page}{part_link.get('href')}"
+        result = f"Название мероприятия: {name_event}\nДата: {date_event}\nСсылка: {link}\n"
+        list_result.append(result)
+
+    if len(list_result) == 0:
+        speak('Запрос временно не возможен.')
+    else:
+        num = 5 if len(list_result) >= 5 else len(list_result)
+        begin = 'Вот мероприятия по Вашему запросу.\n'
+        speak(begin)
+        for i in list_result[:num]:
+            speak(i[:i.rfind('Ссылка:')])
+
+        speak("Направить весь список мероприятий в телеграмм?")
+
+        flag_res = True
+        while flag_res:
+            query = listen()
+            if question_in_or_no(tuple_words=yes_answer, word=query):
+                flag_res = False
+
+                result = f"{begin} {''.join(list_result)}"
+                telegram.notify(token=data["token_bot"], chat_id=data["user_id"], message=result)
+
+            elif question_in_or_no(tuple_words=no_answer, word=query):
+                flag_res = False
+                record_volume()
+
+            else:
+                speak('Я Вас не понял. Скажите да или нет.')
 
 
 # Блок работы со временем и датами.
@@ -328,7 +422,7 @@ def time_has_come(date_from_dict: str, days: int = 0, hours: int = 1, minutes: i
     return datetime_now + delta >= datetime.strptime(date_from_dict, mask_datetime) >= datetime_now - delta
 
 
-def what_time_is_it() -> None:
+def what_time_is_it(*args) -> None:
     """Функция возвращает предложение с обозначением текущего времени."""
     datetime_now = datetime.today()
 
@@ -336,7 +430,7 @@ def what_time_is_it() -> None:
     speak(result)
 
 
-def what_date_today() -> None:
+def what_date_today(*args) -> None:
     """Функция возвращает предложение с обозначением сегодняшней даты."""
     import locale
     datetime_now = datetime.today()
@@ -354,7 +448,7 @@ def get_geolocation(city_fun: str = city) -> tuple[float, float]:
     return latitude, longitude
 
 
-def what_is_the_weather() -> None:
+def what_is_the_weather(*args) -> None:
     """Функция для запроса погоды на яндекс-погоде через API(не более 50 запросов в день) и озвучивания.
     Озвучивает температуру сейчас и как ощущается.
     Если пользователь согласится, то в телеграмм отправится более подробный прогноз погоды."""
@@ -428,7 +522,9 @@ dict_fun = {
     tuple_what_date_today: what_date_today,
     tuple_create_task: create_task,
     tuple_weather: what_is_the_weather,
-    tuple_music: play_music
+    tuple_music: play_music,
+    tuple_events: get_events,
+    tuple_what_can_you_do: what_can_you_do
 
 }
 
@@ -440,7 +536,7 @@ def record_volume(flag_fun=True) -> None:
     for words_tuple, fun in dict_fun.items():
         if question_in_or_no(tuple_words=words_tuple, word=query):
             flag_fun = False
-            fun()  # data, query
+            fun(query)  # data, query
         else:
             continue
     if flag_fun:
