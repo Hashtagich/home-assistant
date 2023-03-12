@@ -1,6 +1,8 @@
 import json
 import re
 from datetime import datetime, timedelta, date
+from random import randint, choice
+from time import sleep
 
 import pyttsx3
 import requests
@@ -9,8 +11,6 @@ import wikipedia
 from bs4 import BeautifulSoup
 from geopy import geocoders
 from notifiers import get_notifier
-
-# from time import sleep
 
 name_json, task_json = 'datas.json', 'tasks.json'
 flag = True
@@ -50,21 +50,25 @@ tuple_create_task = tuple(data['create_task'])
 tuple_events = tuple(data['get_events'])
 tuple_what_can_you_do = tuple(data['what_can_you_do'])
 tuple_what_can_i_do = tuple(data['what_can_i_do'])
-
 tuple_weather = tuple(data['what_is_the_weather'])
-tuple_music = tuple(data['play_music'])
+tuple_game_cube = tuple(data['game_cube'])
+tuple_coin = tuple(data['coin'])
+tuple_question_for_magic_ball = tuple(data['question_for_magic_ball'])
+
+# tuple_music = tuple(data['play_music'])
 
 list_days = data["list_days"]
 list_mounts = data["list_mounts"]
 yes_answer = data['yes_answer']
 no_answer = data['no_answer']
 stop_answer = data['stop_answer']
-url_home_page = data['https://afisha.yandex.ru']
+url_home_page = data['url_home_page']
 
 dict_conditions_ru = data["data_weather"]["conditions_ru"]
 dict_part_name_ru = data["data_weather"]["part_name_ru"]
 
 mask_date = data['mask_date']
+mask_params = data['mask_params']
 mask_datetime = data['mask_datetime']
 weather_api_key = data['weather_api_key']
 city, city_en = data['city']
@@ -142,27 +146,21 @@ def have_tasks_today(dt: dict) -> None:
             update_flag()
             del_or_not_del()
 
-    else:
-        speak('Круг пройден')  # В будущем удалить т.к. цикл начнётся заново, проверено.
-
 
 def update_flag() -> None:
     """Функция возвращает bool значение если сейчас 00 минут. Необходимо, чтобы обновлять flag."""
     global flag
-    if datetime.today().minute == 58:
-        flag = True
-    else:
-        flag = False
+    flag = True if datetime.today().minute == 58 else False
 
 
-def date_filter() -> tuple[int, int, int]:
+def date_filter() -> tuple[str, str, str]:
     """Функция запрашивает данные для даты и преобразовывает в нужный формат."""
     speak('Какое число?')
     date_day = listen()
 
-    for num, list_mount in enumerate(list_days, start=1):
-        if date_day in list_mount or date_day == str(num):
-            date_day = int(num)
+    for num, list_day in enumerate(list_days, start=1):
+        if date_day in list_day or date_day == str(num):
+            date_day = f'0{num}' if len(str(num)) == 1 else str(num)
             break
         else:
             continue
@@ -172,7 +170,7 @@ def date_filter() -> tuple[int, int, int]:
 
     for num, list_mount in enumerate(list_mounts, start=1):
         if date_mount in list_mount or date_mount == str(num):
-            date_mount = int(num)
+            date_mount = f'0{num}' if len(str(num)) == 1 else str(num)
             break
         else:
             continue
@@ -180,9 +178,9 @@ def date_filter() -> tuple[int, int, int]:
     speak('Какое год?')
     date_year = listen()
 
-    for num, list_mount in enumerate(list_days, start=1):
-        if date_year in list_mount or date_year == str(num):
-            date_year = int(f'20{num}')
+    for num, list_year in enumerate(list_days, start=1):
+        if date_year in list_year or date_year == str(num):
+            date_year = f'20{num}'
             break
         else:
             continue
@@ -201,8 +199,12 @@ def create_task(*args) -> None:
     speak('Какая задача?')
     task = listen()
 
-    date_task = date(int(date_fun[0]), date_fun[1], date_fun[2]).strftime(mask_date)
-    datetime_task = f'{date_task} {time_task}'
+    try:
+        date_task = date(int(date_fun[0]), int(date_fun[1]), int(date_fun[2])).strftime(mask_date)
+        datetime_task = f'{date_task} {time_task}'
+    except ValueError:
+        speak('Я не так услышал дату, давайте повторим.')
+        create_task()
 
     speak(f'Вы запланировали на {date_task} в {time_task} {task}. Всё верно?')
 
@@ -352,44 +354,52 @@ def greeting(*args, data_greeting: tuple = tuple_greeting) -> None:
 
 
 def play_music(*args) -> None:
-    """Функция для включения музыки."""
-    speak('Заглушка для музыки')
+    """Функция для включения музыки. В разработке."""
+    pass
 
 
 def get_events(*args, city_requests=city_en) -> None:
     """Функция предоставляет информацию о мероприятиях в городе через сайт яндекс-афиша."""
-    # получаем дату
     date_fun = date_filter()
-    # получаем дату
-    # получаем город
-    # получаем интервал
-    list_result = []
+    try:
+        if datetime.today().date() > date(int(date_fun[0]), int(date_fun[1]), int(date_fun[2])):
+            date_params = datetime.today().date().strftime(mask_params)
+        else:
+            date_params = "-".join(date_fun)
+    except ValueError:
+        speak('Я не так услышал дату, давайте повторим.')
+        get_events()
+
+    dict_result = {}
     url_page = f'https://afisha.yandex.ru/{city_requests}?source=menu-city'
-    params = {'date': "-".join(map(str(date_fun))), 'period': 1}
+    params = {'date': date_params, 'period': 1}
 
     resp = requests.get(url_page, params=params)
     soup = BeautifulSoup(resp.text, 'lxml')
-    # print(soup)
-    # print()
 
     list_event = tuple(soup.find_all('div', class_='Root-fq4hbj-4 iFrhLC'))
     list_links = tuple(soup.find_all('a', class_='EventLink-sc-1x07jll-2 klGCIV'))
 
     for atr, part_link in zip(list_event, list_links):
         name_event = atr.find('h2', class_='Title-fq4hbj-3 hponhw').text
-        date_event = atr.find('li', class_='DetailsItem-fq4hbj-1 ZwxkD').text
+        date_event = f"{atr.find('li', class_='DetailsItem-fq4hbj-1 ZwxkD').text.capitalize()}:\n"
         link = f"{url_home_page}{part_link.get('href')}"
-        result = f"Название мероприятия: {name_event}\nДата: {date_event}\nСсылка: {link}\n"
-        list_result.append(result)
+        dict_result[date_event] = dict_result.get(date_event, []) + [f"Мероприятие: {name_event}\nСсылка: {link}\n\n"]
 
-    if len(list_result) == 0:
-        speak('Запрос временно не возможен.')
+    if len(dict_result.keys()) == 0:
+        speak("""Запрос временно не возможен. 
+        Я слишком часто направлял запрос Яндекс-Афише и мне временно ограничили доступ. 
+        Попробуйте позже.""")
     else:
-        num = 5 if len(list_result) >= 5 else len(list_result)
         begin = 'Вот мероприятия по Вашему запросу.\n'
         speak(begin)
-        for i in list_result[:num]:
-            speak(i[:i.rfind('Ссылка:')])
+
+        for date_event in dict_result.keys():
+            num = 5 if len(dict_result[date_event]) >= 5 else len(dict_result[date_event])
+            speak(date_event)
+
+            for i in dict_result[date_event][:num]:
+                speak(i[:i.rfind('Ссылка:')])
 
         speak("Направить весь список мероприятий в телеграмм?")
 
@@ -398,8 +408,7 @@ def get_events(*args, city_requests=city_en) -> None:
             query = listen()
             if question_in_or_no(tuple_words=yes_answer, word=query):
                 flag_res = False
-
-                result = f"{begin} {''.join(list_result)}"
+                result = f"""{begin}{''.join([f'{i}{"".join(dict_result[i])}' for i in dict_result.keys()])}"""
                 telegram.notify(token=data["token_bot"], chat_id=data["user_id"], message=result)
 
             elif question_in_or_no(tuple_words=no_answer, word=query):
@@ -408,6 +417,23 @@ def get_events(*args, city_requests=city_en) -> None:
 
             else:
                 speak('Я Вас не понял. Скажите да или нет.')
+
+
+def dice_roll(*args) -> None:
+    """Функция для озвучки случайного числа от 1 до 6. Бросок кубика."""
+    speak(f"Выпало {str(randint(1, 6))}")
+
+
+def coin_toss(*args) -> None:
+    """Функция для озвучки результата броска монетки."""
+    speak("Подбрасываю.")
+    sleep(1)
+    speak("Решка" if randint(0, 1) else "Орёл")
+
+
+def speak_random_words(*args, list_words: list[str] = data['answer_for_magic_ball']) -> None:
+    """Функция для озвучивания случайной фразы из заданного списка."""
+    speak(choice(list_words))
 
 
 # Блок работы со временем и датами.
@@ -522,11 +548,13 @@ dict_fun = {
     tuple_what_date_today: what_date_today,
     tuple_create_task: create_task,
     tuple_weather: what_is_the_weather,
-    tuple_music: play_music,
     tuple_events: get_events,
-    tuple_what_can_you_do: what_can_you_do
+    tuple_what_can_you_do: what_can_you_do,
+    tuple_game_cube: dice_roll,
+    tuple_coin: coin_toss,
+    tuple_question_for_magic_ball: speak_random_words
 
-}
+}  # tuple_music: play_music,
 
 
 def record_volume(flag_fun=True) -> None:
@@ -540,7 +568,7 @@ def record_volume(flag_fun=True) -> None:
         else:
             continue
     if flag_fun:
-        speak('Тут будет функция заглушки для тех команд или запросов которые ассистент не умеет.')
+        speak_random_words(list_words=data['i_do_not_know_how_to_do_that'])
 
 
 def main() -> None:
