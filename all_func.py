@@ -1,8 +1,10 @@
 import json
 import re
+from collections import defaultdict
 from datetime import datetime, timedelta, date
-from random import randint, choice
+from random import randint, choice, shuffle
 from time import sleep
+from itertools import cycle
 
 import pyttsx3
 import requests
@@ -11,11 +13,16 @@ import wikipedia
 from bs4 import BeautifulSoup
 from geopy import geocoders
 from notifiers import get_notifier
+from selenium.webdriver import Chrome
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchElementException, ElementNotInteractableException, NoSuchWindowException
 
-name_json, task_json = 'datas.json', 'tasks.json'
+name_json, task_json, favorites_json = 'datas.json', 'tasks.json', 'favorites_sound.json'
 flag = True
 telegram = get_notifier('telegram')
 
+# Для озвучивания
 engine = pyttsx3.init()
 
 engine.setProperty('rate', 150)
@@ -24,8 +31,14 @@ engine.setProperty('volume', 0.9)
 ru_voice_id = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\TTS_MS_RU-RU_IRINA_11.0"
 voice = engine.setProperty('voice', ru_voice_id)
 
+# Для микрофона
 r = sr.Recognizer()
 micro = sr.Microphone(device_index=1)
+
+# Для Chrome, чтобы открывать в фоновом режиме и не закрывался
+chrome_options = Options()
+# chrome_options.add_argument("--headless")
+chrome_options.add_experimental_option("detach", True)
 
 
 # Блок с переменными и функция для работы с json файлами.
@@ -40,7 +53,7 @@ data = open_json_file()
 dict_tasks = open_json_file(name_file=task_json)
 name_assistant = data['name_assistant']
 
-tuple_del_phrase = tuple(data['list_del_phrase'])
+tuple_del_phrase_wiki = tuple(data['list_del_phrase_wiki'])
 tuple_rename = tuple(data['rename'])
 tuple_what_tasks_today = tuple(data['what_tasks_today'])
 tuple_what_date_today = tuple(data['what_date_today'])
@@ -54,8 +67,9 @@ tuple_weather = tuple(data['what_is_the_weather'])
 tuple_game_cube = tuple(data['game_cube'])
 tuple_coin = tuple(data['coin'])
 tuple_question_for_magic_ball = tuple(data['question_for_magic_ball'])
-
-# tuple_music = tuple(data['play_music'])
+tuple_music = tuple(data['play_music'])
+tuple_favorites = tuple(data['favorites'])
+tuple_play_favorites = tuple(data['play_favorites'])
 
 list_days = data["list_days"]
 list_mounts = data["list_mounts"]
@@ -74,9 +88,9 @@ weather_api_key = data['weather_api_key']
 city, city_en = data['city']
 
 
-def write_json_file(dt: dict, name_file: str = name_json) -> None:
+def write_json_file(dt: dict, name_file: str = name_json, action='w') -> None:
     """Функция перезаписи данных в файле формата json."""
-    with open(name_file, 'w', encoding='utf8') as file:
+    with open(name_file, action, encoding='utf8') as file:
         file.write(json.dumps(dt, indent=4, sort_keys=False, ensure_ascii=False))
 
 
@@ -95,12 +109,15 @@ def listen() -> str:
             r.adjust_for_ambient_noise(source=source, duration=0.5)  # настройка посторонних шумов
             audio = r.listen(source=source)
 
-        result = r.recognize_google(audio, language='ru-RU').lower()
+        result = r.recognize_google(audio, language='ru-RU')
 
-        return call_assistant(query=result)
+        if isinstance(result, type(None)):
+            listen()
+        else:
+            return result.strip().lower()
 
     except sr.UnknownValueError:
-        speak('Я Вас не понял, повторите!')
+        speak('Я Вас не понял, повторите! Это тест!')  # тестовая фраза, потом удалить
         listen()
 
 
@@ -254,24 +271,17 @@ def delete_task(dt: dict) -> dict:
 
 
 # Блок с функциями для работы с ассистентом.
-def call_assistant(query: str) -> str:
-    """Функция проверяет обратились к ассистенту или нет. Функция убирает из запроса имя ассистента."""
-    if query == name_assistant:
-        speak('Слушаю Вас.')
-        record_volume()
-    elif name_assistant in query:
-        request = query.replace(name_assistant, '')
-        result = stop_assistant(query=request)
-        return result
-    else:
-        result = stop_assistant(query=query)
-        return result
-
-
 def stop_assistant(query: str) -> str:
+    global driver
     """Функция проверяет сказал ли пользователь Стоп или нет."""
     if question_in_or_no(tuple_words=stop_answer, word=query):
-        main()
+        try:
+            driver.quit()
+            speak("Отключил")  # для тестов
+        except NameError:
+            pass
+        finally:
+            main()
     else:
         return query
 
@@ -321,15 +331,20 @@ def question_in_or_no(tuple_words: tuple, word: str) -> bool:
         return any([True for i in tuple_words if i.lower() in word.lower()])
 
 
-def get_in_wiki(*args, tuple_del_phrase_wiki: tuple = tuple_del_phrase) -> None:  # Доделать !!!
+def del_words(string: str, tuple_del_phrase: tuple) -> str:
+    mask_phrase = " |".join(tuple_del_phrase)
+    result = re.sub(mask_phrase, r'', string)
+    return result
+
+
+def get_in_wiki(*args) -> None:  # Доделать !!!
     """Функция для парсинга Википедии на русском языке. Удалят слова совпадающие с кортежем list_del_phrase
     и возвращает первый абзац странички запроса."""
     wikipedia.set_lang("ru")
-    mask_phrase = " |".join(tuple_del_phrase_wiki)
 
     string = args[0]
+    phrase = del_words(string=string, tuple_del_phrase=tuple_del_phrase_wiki)
 
-    phrase = re.sub(mask_phrase, r'', string)
     try:
         article = wikipedia.page(phrase).content
         result = article[:article.find('\n')]
@@ -337,6 +352,85 @@ def get_in_wiki(*args, tuple_del_phrase_wiki: tuple = tuple_del_phrase) -> None:
         speak(f'Вот что удалось найти на Википедии. {result}')
     except wikipedia.exceptions.PageError:
         speak(f'Я не смог найти информацию по запросу {string}')
+
+
+def play_music(*args) -> None:
+    """Функция для включения музыки(видео) на Youtube."""
+    global driver, new_dict_favorites
+    try:
+        driver.quit()
+    except NameError:
+        driver = Chrome(executable_path=data["drive_path"], chrome_options=chrome_options)
+
+        string = args[0]
+        search = del_words(string=string, tuple_del_phrase=tuple_music)
+
+        youtube_search_page = f"https://www.youtube.com/results?search_query={search.replace(' ', '+')}+музыка"
+        driver.get(youtube_search_page)
+
+        speak('Минуту, сейчас включу')
+        # sleep(5)
+
+        video_play = driver.find_element(By.XPATH, '// *[ @ id = "video-title"]')
+        title, link = video_play.get_attribute('title'), video_play.get_attribute('href')
+        new_dict_favorites = {title: link}
+        video_play.click()
+
+
+def add_to_favorites(*args) -> None:
+    """Функция для добавления ссылки на понравившейся саундтрек(видео)."""
+    dict_favorites = open_json_file(name_file=favorites_json)
+    if None in new_dict_favorites.values():
+        print(new_dict_favorites)
+        dict_favorites_not_null = {key: val for key, val in new_dict_favorites.items() if
+                                   not isinstance(val, type(None))}
+    else:
+        dict_favorites_not_null = new_dict_favorites
+
+    dict_favorites.update(dict_favorites_not_null)
+    write_json_file(dt=dict_favorites, name_file=favorites_json)
+    speak('Добавил в список избранных.')
+
+
+def play_favorites_list() -> None:
+    global driver, iter_sounds, dict_favorites
+    """Функция открывает файл с избранными саундтрек(словарь с названиями: ссылками на ютуб)
+    перемешивает и запускает первый."""
+    dict_favorites = open_json_file(name_file=favorites_json)
+    title_list = list(dict_favorites.keys())
+
+    if len(title_list) == 0:
+        speak('У вас нет избранных саундтреков')
+    else:
+        shuffle(title_list)
+        iter_sounds = cycle(iter(title_list))
+        play_favorites_sound()
+
+
+def play_favorites_sound() -> None:
+    """Функция запускает саундтрек."""
+    global driver
+    driver = Chrome(executable_path=data["drive_path"], chrome_options=chrome_options)
+    next_sound = next(iter_sounds)
+    driver.get(dict_favorites[next_sound])
+    speak(f'Включаю {next_sound}')
+    sleep(10)
+    button_play_xpath = '// *[ @ id = "movie_player"] / div[4] / button'
+    try:
+        clic_play = driver.find_element(By.XPATH, button_play_xpath)
+        clic_play.click()
+    except (NoSuchElementException, ElementNotInteractableException, NoSuchWindowException):
+        pass
+
+
+def next_favorites_sound(*args) -> None:
+    """Функция закрывает предыдущий сайт(браузер) и открывает следующий при соблюдении условий."""
+    try:
+        driver.quit()
+    except NameError:
+        play_favorites_list()
+    else:
+        play_favorites_sound()
 
 
 def greeting(*args, data_greeting: tuple = tuple_greeting) -> None:
@@ -353,11 +447,6 @@ def greeting(*args, data_greeting: tuple = tuple_greeting) -> None:
         speak(data_greeting[0])
 
 
-def play_music(*args) -> None:
-    """Функция для включения музыки. В разработке."""
-    pass
-
-
 def get_events(*args, city_requests=city_en) -> None:
     """Функция предоставляет информацию о мероприятиях в городе через сайт яндекс-афиша."""
     date_fun = date_filter()
@@ -366,11 +455,11 @@ def get_events(*args, city_requests=city_en) -> None:
             date_params = datetime.today().date().strftime(mask_params)
         else:
             date_params = "-".join(date_fun)
-    except ValueError:
+    except (ValueError, TypeError):
         speak('Я не так услышал дату, давайте повторим.')
         get_events()
 
-    dict_result = {}
+    dict_result = defaultdict(list)
     url_page = f'https://afisha.yandex.ru/{city_requests}?source=menu-city'
     params = {'date': date_params, 'period': 1}
 
@@ -384,7 +473,7 @@ def get_events(*args, city_requests=city_en) -> None:
         name_event = atr.find('h2', class_='Title-fq4hbj-3 hponhw').text
         date_event = f"{atr.find('li', class_='DetailsItem-fq4hbj-1 ZwxkD').text.capitalize()}:\n"
         link = f"{url_home_page}{part_link.get('href')}"
-        dict_result[date_event] = dict_result.get(date_event, []) + [f"Мероприятие: {name_event}\nСсылка: {link}\n\n"]
+        dict_result[date_event] += [f"Мероприятие: {name_event}\nСсылка: {link}\n\n"]
 
     if len(dict_result.keys()) == 0:
         speak("""Запрос временно не возможен. 
@@ -540,7 +629,7 @@ def what_is_the_weather(*args) -> None:
 
 # Блок main
 dict_fun = {
-    tuple_del_phrase: get_in_wiki,
+    tuple_del_phrase_wiki: get_in_wiki,
     tuple_rename: rename_assistant,
     tuple_what_tasks_today: what_tasks_today,
     tuple_greeting: greeting,
@@ -552,23 +641,45 @@ dict_fun = {
     tuple_what_can_you_do: what_can_you_do,
     tuple_game_cube: dice_roll,
     tuple_coin: coin_toss,
+    tuple_music: play_music,
+    tuple_favorites: add_to_favorites,
+    tuple_play_favorites: next_favorites_sound,
     tuple_question_for_magic_ball: speak_random_words
 
-}  # tuple_music: play_music,
+}
 
 
 def record_volume(flag_fun=True) -> None:
     """Функция запускает функцию listen и прогоняет её результат через словарь dict_fun
-    и при совпадении выполняется функция, которая заложена в боте."""
+    и при совпадении выполняется функция, которая заложена в ассистенте."""
     query = listen()
-    for words_tuple, fun in dict_fun.items():
-        if question_in_or_no(tuple_words=words_tuple, word=query):
-            flag_fun = False
-            fun(query)  # data, query
-        else:
-            continue
-    if flag_fun:
-        speak_random_words(list_words=data['i_do_not_know_how_to_do_that'])
+
+    try:
+
+        if name_assistant == query or name_assistant in query:
+            if name_assistant == query:
+                speak('Слушаю Вас.')
+                query = listen()
+                query = stop_assistant(query=query.replace(name_assistant, ''))
+
+            elif name_assistant in query:
+                query = stop_assistant(query=query.replace(name_assistant, ''))
+
+            for words_tuple, fun in dict_fun.items():
+                if question_in_or_no(tuple_words=words_tuple, word=query):
+                    flag_fun = False
+                    fun(query)  # data, query
+                else:
+                    continue
+            if flag_fun:
+                speak_random_words(list_words=data['i_do_not_know_how_to_do_that'])
+    except Exception as r:
+        speak("Ошибка попалась")
+        print(f'ошибка!!!! {r}')
+        print()
+        print(name_assistant, type(name_assistant))
+        print()
+        print(query, type(query))
 
 
 def main() -> None:
